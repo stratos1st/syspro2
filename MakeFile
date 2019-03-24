@@ -1,0 +1,20 @@
+CC= g++
+CGLAG=  -O0 -ggdb -Wall
+
+main.out: main.o wallet_node_struct.o transactions_node_struct.o transaction_struct.o bitcoin_struct.o tree_node.o wallet_struct.o block.o user_block_item.o hash_table.o
+	$(CC) $(CFLAG) -o main.out main.o wallet_node_struct.o transactions_node_struct.o transaction_struct.o bitcoin_struct.o tree_node.o wallet_struct.o block.o user_block_item.o hash_table.o
+
+main.o: main.cpp
+	$(CC) -c main.cpp
+
+wallet_node_struct.o: ./list_structs/wallet_node_struct.cpp ./list_structs/wallet_node_struct.hpp
+	$(CC) -c ./list_structs/wallet_node_struct.cpp
+
+
+.PHONY: clean
+clean:
+rm -f main.out main.o
+
+.PHONY: cleandir
+clean:
+rm -f main.out main.o
