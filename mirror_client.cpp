@@ -7,8 +7,11 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/inotify.h>
 
 using namespace std;
+
+bool endsWith(char* mainStr, char* toMatch);
 
 int main(int argc, char * argv[]){
 
@@ -94,10 +97,66 @@ int main(int argc, char * argv[]){
   }
   fprintf(common_dot_id_file, "%d", getpid());
 
+//---------------------------------------------watching common directory------------------------------------------
+  int fdnotify = -1;
+
+  fdnotify = inotify_init();
+  if (fdnotify < 0){
+    cerr<<"inotify_init failed:" <<strerror(errno)<<endl;
+    return 1;
+  }
+  int wd = inotify_add_watch(fdnotify, common_dir, IN_CREATE | IN_DELETE);
+  if (wd < 0) {
+    cerr<< "inotify_add_watch failed: "<< strerror(errno)<<endl;
+    return 1;
+  }
+
+  while(1) {
+    char buffer[4096];
+    struct inotify_event *event = NULL;
+
+    int len = read(fdnotify, buffer, sizeof(buffer));
+    if (len < 0) {
+      cerr<<"read: "<<strerror(errno)<<endl;
+      return 1;
+    }
+
+    event = (struct inotify_event *) buffer;
+    while(event != NULL) {
+      //---------------file .id created
+      if ((event->mask & IN_CREATE) && endsWith(event->name, ".id")){
+        printf("File created: %s\n", event->name);
+      }
+      //---------------file .id deleted
+      else if ((event->mask & IN_DELETE) && endsWith(event->name, ".id")){
+        printf("File deleted: %s\n", event->name);
+      }
+      // else {
+      //   printf("Unknown Mask 0x%.8x\n", event->mask);
+      // }
+
+      // Move to next struct
+      len -= sizeof(*event) + event->len;
+      if (len > 0)
+        event =(inotify_event*)( ((void *) event) + sizeof(event) + event->len);
+      else
+        event = NULL;
+    }
+
+  }
+
 
 
 
 
 
   return 0;
+}
+
+bool endsWith(char* mainStr, char* toMatch){
+	if(strlen(mainStr) >= strlen(toMatch) &&
+			strcmp(mainStr + strlen(mainStr) - strlen(toMatch), toMatch) == 0)
+			return true;
+		else
+			return false;
 }
