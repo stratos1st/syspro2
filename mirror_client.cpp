@@ -19,7 +19,7 @@ bool endsWith(char* mainStr, char* toMatch);
 int is_file(const char *path);
 char* read_hole_file(char* file_name);
 int file_sz(char* file_name);
-int rvc_process(char* common_dir, char* new_dot_id, int id);
+int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir);
 int send_process(char* common_dir, char* new_dot_id, int id, char* input_dir);
 
 int main(int argc, char * argv[]){
@@ -151,7 +151,7 @@ int main(int argc, char * argv[]){
       //create rcv child
       pid_t pid_rcv = fork();
       if (pid_rcv == 0){//---------------------------------------rcv child process
-        if(rvc_process(common_dir, dir->d_name, id)!=0){
+        if(rvc_process(common_dir, dir->d_name, id, mirror_dir)!=0){
           cerr<< "rvc_proces0 failed \n";
           return 1;
         }
@@ -209,7 +209,7 @@ int main(int argc, char * argv[]){
         //create rcv child
         pid_t pid_rcv = fork();
         if (pid_rcv == 0){//---------------------------------------rcv child process
-          if(rvc_process(common_dir, event->name, id)!=0){
+          if(rvc_process(common_dir, event->name, id, mirror_dir)!=0){
             cerr<< "rvc_proces failed \n";
             return 1;
           }
@@ -257,9 +257,12 @@ bool endsWith(char* mainStr, char* toMatch){
 }
 
 int is_file(const char *path){
-    // FIXME den doulebi
     struct stat path_stat;
-    stat(path, &path_stat);
+    if(stat(path, &path_stat)!=0){
+      cerr<< "is_file stat failed: "<< strerror(errno)<<endl;
+      //return 1;
+      exit(1);
+    }
     return S_ISREG(path_stat.st_mode);
 }
 
@@ -278,77 +281,126 @@ char* read_hole_file(char* file_name){// TODO if return NULL
   return string;
 }
 
-int file_sz(char* file_name){// TODO if return NULL
-  FILE *fp = fopen(file_name, "rb");
+int file_sz(char* file_name){
+  int fd =-1;
+  if((fd=open(file_name, O_RDONLY))<0){
+    cerr<< "file_sz openfile failed: "<< strerror(errno)<<file_name<<endl;
+    //return 1;
+    exit(1);
+  }
 
-  fseek(fp, 0L, SEEK_END);
-  int sz = ftell(fp);
-  fclose(fp);
+  int sz =lseek(fd, 0L, SEEK_END);
+  close(fd);
 
   return sz;
 }
 
-int rvc_process(char* common_dir, char* new_dot_id, int id){
+int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir){
   struct stat tmp_stat;
   //---------------------------------------rcv child process
-    char pipe_name[50];
-    cout<<"rcv child\n";
-      //make and open pipe rcv
-      new_dot_id[strlen(new_dot_id)-3]='\0';
-      sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
-      if(stat(pipe_name, &tmp_stat) != 0)
-        if(mkfifo(pipe_name, 0666) !=0){
-          if(errno!=EEXIST){
-            cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
-            //return 1;
-            exit(1);
-          }
-          else
-            cout<<"file rcv exists\n";
-        }
-      int pipe_rcv;
-      if((pipe_rcv=open(pipe_name,O_RDONLY))<0){
-        cerr<< "open rcv failed: "<< strerror(errno)<<endl;
+  char pipe_name[50];
+  cout<<"rcv child\n";
+  //make and open pipe rcv
+  new_dot_id[strlen(new_dot_id)-3]='\0';
+  sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
+  if(stat(pipe_name, &tmp_stat) != 0){
+    if(mkfifo(pipe_name, 0666) !=0){
+      if(errno!=EEXIST){
+        cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
         //return 1;
         exit(1);
       }
+    }
+  }
+  else
+    cout<<"file rcv exists\n";
+  int pipe_rcv=-1;
+  if((pipe_rcv=open(pipe_name,O_RDWR))<0){
+    cerr<< "open rcv failed: "<< strerror(errno)<<endl;
+    //return 1;
+    exit(1);
+  }
 
-      cout<<"reading\n";
-      fflush(stdout);
-      // char tmp[50];
-      // if(read(pipe_rcv, tmp, 12)<0){
-      //   cerr<< "read from rcv pipe failed: "<< strerror(errno)<<endl;
-      //   //return 1;
-      //   exit(1);
-      // }
+  cout<<"reading\n";
 
-      // cout<<"rcv child "<<tmp;
+  char buffer[999];
+  if(read(pipe_rcv, buffer, 2)<0){
+    cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+    //return 1;
+    exit(1);
+  }
+  int sz=stol(buffer, NULL, 10);
+  while(sz!=0){
+    //read name
+    if(read(pipe_rcv, buffer, sz)<0){
+      cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+      //return 1;
+      exit(1);
+    }
+    buffer[sz]='\0';
 
-      close(pipe_rcv);
+    //make file
+    FILE *new_file=NULL;
+    char tmp[300];
+    sprintf(tmp, "%s/%s",mirror_dir,buffer);
+    new_file=fopen(tmp, "a");
+    if(new_file==NULL){
+      cerr <<"!rcv can not create "<<tmp<<" file "<<"\n";
+      //return 1;
+      exit(1);
+    }
+
+    //read file
+    if(read(pipe_rcv, buffer, 4)<0){
+      cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+      //return 1;
+      exit(1);
+    }
+    sz=stol(buffer, NULL, 10);
+    if(read(pipe_rcv, buffer, sz)<0){
+      cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+      //return 1;
+      exit(1);
+    }
+
+    //write to file
+    fprintf(new_file, "%s", buffer);
+    fclose(new_file);
+
+    //read next name or 00
+    if(read(pipe_rcv, buffer, 2)<0){
+      cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+      //return 1;
+      exit(1);
+    }
+    sz=stol(buffer, NULL, 10);
+  }
+
+  close(pipe_rcv);
 
   return 0;
 }
 
 int send_process(char* common_dir, char* new_dot_id, int id, char* input_dir){
   struct stat tmp_stat;
-  cout<<new_dot_id<<endl;
   //---------------------------------------send child process
   char pipe_name[50];
   cout<<"send child\n";
   //make and open pipe send
   new_dot_id[strlen(new_dot_id)-3]='\0';
   sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
-  if(stat(pipe_name, &tmp_stat) != 0)
+  if(stat(pipe_name, &tmp_stat) != 0){
     if(mkfifo(pipe_name, 0666) !=0){
       if(errno!=EEXIST){
         cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
         //return 1;
         exit(1);
       }
-      else
-        cout<<"file send exists\n";
     }
-  int pipe_send;
+  }
+  else
+    cout<<"file send exists\n";
+  int pipe_send=-1;
   if((pipe_send=open(pipe_name,O_WRONLY))<0){
     cerr<< "open send failed: "<< strerror(errno)<<endl;
     //return 1;
@@ -356,7 +408,6 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* input_dir){
   }
 
   cout<<"writing\n";
-  fflush(stdout);
 
   DIR *d=NULL;
   struct dirent *dir;
@@ -367,47 +418,53 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* input_dir){
   }
   //for all the files i need to send
   while ((dir = readdir(d)) != NULL){
-  char* filename=dir->d_name;
-  // TODO parsing
-    if(strcmp(filename,".")!=0 && strcmp(filename,"..")!=0){ // TODO && is_file(filename)){
-      char buffer[100],*tmp;// TODO check size
+    // TODO parsing
+    char tmp[100];
+    sprintf(tmp, "%s%s",input_dir,dir->d_name);
+    if(strcmp(dir->d_name,".")!=0 && strcmp(dir->d_name,"..")!=0 && is_file(tmp)){
+      char buffer[9999];// TODO check size
+      char filename[100];
+      sprintf(filename, "%s", dir->d_name);
+      cout<<"for "<<filename << '\n';
 
       //write name
-      sprintf(buffer, "%d",strlen(filename));
-      if(write(pipe_send, buffer, 2)){
-        cerr<< "write send failed: "<< strerror(errno)<<endl;
+      int sz=strlen(filename);
+      sprintf(buffer, "%d",sz);
+      if(write(pipe_send, buffer, 2)<0){
+        cerr<< "write send faileda: "<< strerror(errno)<<endl;
         //return 1;
         exit(1);
       }
-      if(write(pipe_send, filename, strlen(filename)+1)){
+      if(write(pipe_send, filename, sz)<0){
         cerr<< "write send failed: "<< strerror(errno)<<endl;
         //return 1;
         exit(1);
       }
 
       //write file
-      sprintf(buffer, "%d",file_sz(filename));
-      if(write(pipe_send, buffer, 4)){
+      sprintf(tmp, "%s%s",input_dir,filename);
+      sz=file_sz(tmp);
+      sprintf(buffer, "%d",sz);
+      if(write(pipe_send, buffer, 4)<0){
         cerr<< "write send failed: "<< strerror(errno)<<endl;
         //return 1;
         exit(1);
       }
-      tmp= read_hole_file(filename);
-      if(write(pipe_send, tmp, file_sz(filename))){
+      char* tmpp= read_hole_file(tmp);
+      if(write(pipe_send, tmpp, sz)<0){
         cerr<< "write send failed: "<< strerror(errno)<<endl;
         //return 1;
         exit(1);
       }
     }
   }
-  if(write(pipe_send, "00", 2)){
+  if(write(pipe_send, "00", 2)<0){
     cerr<< "write send failed: "<< strerror(errno)<<endl;
     //return 1;
     exit(1);
   }
+
   closedir(d);
-
-
   close(pipe_send);
 
   return 0;
