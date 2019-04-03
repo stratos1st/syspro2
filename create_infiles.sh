@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FIXME if we are too unlucky random names can be generated twice!
+# if we are too unlucky random names can be generated twice!
 
 #check number of params
 if [ $# -ne 4 ] ; then
