@@ -21,11 +21,30 @@ char* read_hole_file(char* file_name);
 int file_sz(char* file_name);
 int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir);
 int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir);
+int delete_process(char* mirror_dir, char* dot_id_file);
+void usr1_signal_handler(int sig);
+void kill_signal_handler(int sig);
+
+char handler_common_dir[50], handler_mirror_dir[50];
+int handler_id;
 
 int main(int argc, char * argv[]){
   int id, buffer_size;
   char common_dir[50], input_dir[50], mirror_dir[50], log_file[50];
   char any_path[100];
+
+  //asigning signal handlers
+  //FIXEME kamia fora stin 2h fora pou to trexo bgazi mono ena "child failed"
+  static struct sigaction act;
+  act.sa_handler = usr1_signal_handler;
+  sigfillset (&(act.sa_mask ));
+  sigaction (SIGUSR1, &act, NULL);
+
+  static struct sigaction act2;
+  act2.sa_handler = kill_signal_handler;
+  sigfillset (&(act2.sa_mask ));
+  sigaction (SIGKILL, &act2, NULL);
+  sigaction (SIGINT, &act2, NULL);
 
 //---------------------------------------------parsing command line argumets------------------------------------------
   int opt;
@@ -51,6 +70,11 @@ int main(int argc, char * argv[]){
         break;
     }
   }
+
+  //initializing kill handler values
+  strcpy(handler_common_dir,common_dir);
+  strcpy(handler_mirror_dir,mirror_dir);
+  handler_id=id;
 
   //check for command argument errors
   if(buffer_size<=0){
@@ -83,13 +107,13 @@ int main(int argc, char * argv[]){
 
 //---------------------------------------------making dirs and files------------------------------------------
   //make mirror_dir
-  if(mkdir(mirror_dir, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)){
+  if(mkdir(mirror_dir, 0766)){
     cerr <<"!Unable to create mirror_dir "<<mirror_dir<<"\n";
     return 1;
   }
   //make common_dir
   if(stat(common_dir, &tmp_stat) != 0)
-    if(mkdir(common_dir, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH)){
+    if(mkdir(common_dir, 0766)){
       cerr <<"!Unable to create directory "<<common_dir<<"\n";
       return 1;
     }
@@ -133,7 +157,7 @@ int main(int argc, char * argv[]){
       pid_t pid_send = fork();
       if (pid_send == 0){//---------------------------------------send child process
         if(send_process(common_dir, dir->d_name, id, "", input_dir)!=0){
-          cerr<< "send_process0 failed \n";
+          cerr<< "send_proces0 failed \n";
           return 1;
         }
         return 0;
@@ -163,15 +187,17 @@ int main(int argc, char * argv[]){
         cerr<< "fork send0 failed: "<< strerror(errno)<<endl;
         return 1;
       }
+
+      //TODO ektiposi minimatos epitixias gia ka8e xristi
+      wait(NULL);
+      wait(NULL);
+      cout<<"Done for client "<<dir->d_name<<endl;
+
     }
   }
   closedir(d);
 
   cout<<"teliosa me tous proigoumenous\n";
-
-  //TODO ektiposi minimatos epitixias gia ka8e xristi
-  wait(NULL);
-  wait(NULL);
 
   //check if file added or deleted
   while(1) {
@@ -231,24 +257,37 @@ int main(int argc, char * argv[]){
 
       }
       //---------------file .id deleted
-      else if ((event->mask & IN_DELETE)){ //&& endsWith(event->name, ".id")){
+      else if ((event->mask & IN_DELETE) && endsWith(event->name, ".id")){
         printf("File deleted: %s\n", event->name);
-        char ttt[100];
-        strcpy(ttt, event->name);
-        ttt[strlen(ttt)-3]='\0';
-        char deleted_usr_dir[100];
-        sprintf(deleted_usr_dir,"%s%s",mirror_dir,ttt);
-        cout<<"diagrafo "<<deleted_usr_dir<<endl;
 
+        //create delete child
+        pid_t pid_send = fork();
+        if (pid_send == 0){//---------------------------------------send child process
+          if(delete_process(mirror_dir, event->name)!=0){
+            cerr<< "delete_process failed \n";
+            return 1;
+          }
+          return 0;
+        }
+        else if (pid_send > 0){
+            // parent process
+        }
+        else{
+          cerr<< "fork delete failed: "<< strerror(errno)<<endl;
+          return 1;
+        }
       }
       else {
-        printf("Unknown Mask 0x%.8x\n", event->mask);
+        printf("Unknown Mask 0x%.8x %s\n", event->mask,event->name);
+        // printf("Mask 0x%.8x\n", IN_IGNORED);
+        // printf("Mask 0x%.8x\n", IN_CREATE);
+        // printf("Mask 0x%.8x\n", IN_DELETE);
       }
 
       // Move to next struct
-      len -= sizeof(*event) + event->len;
+      len -= sizeof(struct inotify_event) + event->len;
       if (len > 0)
-        event =(inotify_event*)( ((void *) event) + sizeof(event) + event->len);
+        event =(inotify_event*)( ((void *) event) + sizeof(struct inotify_event) + event->len);
       else
         event = NULL;
     }
@@ -307,6 +346,8 @@ int file_sz(char* file_name){
 
 int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir){
   struct stat tmp_stat;
+  // kill(getppid(),SIGUSR1);
+  // exit(1);
   //---------------------------------------rcv child process
   char pipe_name[50];
   cout<<"rcv child\n";
@@ -416,6 +457,8 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir){
 int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir){
   struct stat tmp_stat;
   //FIXME an enas fakelos ine kenos
+  // kill(getppid(),SIGUSR1);
+  // exit(1);
   //---------------------------------------send child process
   char pipe_name[50];
   cout<<"send child\n";
@@ -499,10 +542,61 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
     cout<<"TELIOSA kiego\n";
   }
 
-
-
   closedir(d);
   close(pipe_send);
 
   return 0;
+}
+
+int delete_process(char* mirror_dir, char* dot_id_file){
+  char ttt[100];
+  struct stat tmp_stat;
+
+  //remove ".id" from string
+  strcpy(ttt, dot_id_file);
+  ttt[strlen(ttt)-3]='\0';
+
+  //find mirror/id
+  char deleted_usr_dir[100];
+  sprintf(deleted_usr_dir,"%s/%s",mirror_dir,ttt);
+  cout<<"diagrafo "<<deleted_usr_dir<<endl;
+
+  //deleting mirror/id
+  char command[50];
+  sprintf(command,"rm -r %s",deleted_usr_dir);
+  if(stat(deleted_usr_dir, &tmp_stat) == 0)
+    if(system(command)!=0){
+      cerr<< "deleting system failed: "<< strerror(errno)<<endl;
+      return 1;
+    }
+
+  return 0;
+}
+
+void usr1_signal_handler(int sig){
+  cout<<"child failed\n";
+  fflush(stdout);
+}
+
+void kill_signal_handler(int sig){
+  struct stat tmp_stat;
+  char command[50];
+
+  //deleting mirror
+  sprintf(command,"rm -r %s",handler_mirror_dir);
+  if(stat(handler_mirror_dir, &tmp_stat) == 0)
+    if(system(command)!=0){
+      cerr<< "system1 failed: "<< strerror(errno)<<endl;
+      exit(1);
+    }
+
+  //deleting common/.id
+  sprintf(command,"rm -r %s/%d.id",handler_common_dir,handler_id);
+  if(stat(handler_common_dir, &tmp_stat) == 0)
+    if(system(command)!=0){
+      cerr<< "system2 failed: "<< strerror(errno)<<endl;
+      exit(1);
+    }
+
+  cout<<"exiting\n";
 }
