@@ -17,9 +17,10 @@
 using namespace std;
 //FIXME otan lambano sima apo ta pedia kapies fores emfanizi mono ena apo ta 2
 //TODO 30 sec
-//TODO use flock for logfile
+//TODO check if lockfile is ok
 //TODO close logfile
 //TODO handler globals na ginoun pointers
+//TODO diagrafi ta .fifo
 bool endsWith(char* mainStr, char* toMatch);
 int is_file(const char *path);
 char* read_hole_file(char* file_name);
@@ -372,7 +373,7 @@ void write_to_logfile(int send, int send_bytes, int logfile){
   else if(send==2)
     sprintf(tmp, "rcved file\n");
   else if(send==3)
-    sprintf(tmp, "send file\n");
+    sprintf(tmp, "sended file\n");
 
   write(logfile, tmp, strlen(tmp));
   fdatasync(logfile);
@@ -588,8 +589,8 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
       return 1;
     }
     cout<<"TELIOSA kiego\n";
+    write_to_logfile(1, 2, logfile);
   }
-  write_to_logfile(1, 2, logfile);
 
   closedir(d);
   close(pipe_send);
