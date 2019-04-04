@@ -12,27 +12,30 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 
 using namespace std;
-//TODO log file
 //FIXME otan lambano sima apo ta pedia kapies fores emfanizi mono ena apo ta 2
 //TODO 30 sec
 //TODO use flock for logfile
+//TODO close logfile
+//TODO handler globals na ginoun pointers
 bool endsWith(char* mainStr, char* toMatch);
 int is_file(const char *path);
 char* read_hole_file(char* file_name);
 int file_sz(char* file_name);
-int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, char* logfile);
-int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir, char* logfile);
+void write_to_logfile(int send, int send_bytes, int logfile);
+int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, int logfile);
+int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir, int logfile);
 int delete_process(char* mirror_dir, char* dot_id_file);
 void usr1_signal_handler(int sig);
 void kill_signal_handler(int sig);
 
 char handler_common_dir[50], handler_mirror_dir[50];
-int handler_id;
+int handler_id, handler_logfile_fd;
 
 int main(int argc, char * argv[]){
-  int id, buffer_size;
+  int id, buffer_size, logfile_fd;
   char common_dir[50], input_dir[50], mirror_dir[50], log_file[50];
   char any_path[100];
 
@@ -73,11 +76,6 @@ int main(int argc, char * argv[]){
         break;
     }
   }
-
-  //initializing kill handler values
-  strcpy(handler_common_dir,common_dir);
-  strcpy(handler_mirror_dir,mirror_dir);
-  handler_id=id;
 
   //check for command argument errors
   if(buffer_size<=0){
@@ -132,13 +130,21 @@ int main(int argc, char * argv[]){
   fprintf(common_dot_id_file, "%d", getpid());
 
   //make log_file
-  FILE *log_file_file=NULL;
-  log_file_file=fopen(log_file, "w");
-  if(log_file_file==NULL){
+  logfile_fd=-1;
+  logfile_fd=open(log_file,O_CREAT | O_WRONLY, 0766);
+  if(logfile_fd<=0){
     cerr <<"!Can not create logfile file "<<id<<"\n";
     return 1;
   }
-  fprintf(log_file_file, "%d\n", id);
+  char write_tmp[50];
+  sprintf(write_tmp, "%d\n",id);
+  write(logfile_fd, write_tmp, strlen(write_tmp));
+
+  //initializing kill handler values
+  strcpy(handler_common_dir,common_dir);
+  strcpy(handler_mirror_dir,mirror_dir);
+  handler_id=id;
+  handler_logfile_fd=logfile_fd;
 
   //watching common directory
   int fdnotify = -1;
@@ -168,7 +174,7 @@ int main(int argc, char * argv[]){
       //create send child
       pid_t pid_send = fork();
       if (pid_send == 0){//---------------------------------------send child process
-        if(send_process(common_dir, dir->d_name, id, "", input_dir,log_file)!=0){
+        if(send_process(common_dir, dir->d_name, id, "", input_dir,logfile_fd)!=0){
           cerr<< "send_proces0 failed \n";
           return 1;
         }
@@ -185,7 +191,7 @@ int main(int argc, char * argv[]){
       //create rcv child
       pid_t pid_rcv = fork();
       if (pid_rcv == 0){//---------------------------------------rcv child process
-        if(rvc_process(common_dir, dir->d_name, id, mirror_dir,log_file)!=0){
+        if(rvc_process(common_dir, dir->d_name, id, mirror_dir,logfile_fd)!=0){
           cerr<< "rvc_proces0 failed \n";
           return 1;
         }
@@ -231,7 +237,7 @@ int main(int argc, char * argv[]){
         //create send child
         pid_t pid_send = fork();
         if (pid_send == 0){//---------------------------------------send child process
-          if(send_process(common_dir, event->name, id, "", input_dir,log_file)!=0){
+          if(send_process(common_dir, event->name, id, "", input_dir,logfile_fd)!=0){
             cerr<< "send_process failed \n";
             return 1;
           }
@@ -248,7 +254,7 @@ int main(int argc, char * argv[]){
         //create rcv child
         pid_t pid_rcv = fork();
         if (pid_rcv == 0){//---------------------------------------rcv child process
-          if(rvc_process(common_dir, event->name, id, mirror_dir,log_file)!=0){
+          if(rvc_process(common_dir, event->name, id, mirror_dir,logfile_fd)!=0){
             cerr<< "rvc_proces failed \n";
             return 1;
           }
@@ -356,7 +362,24 @@ int file_sz(char* file_name){
   return sz;
 }
 
-int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, char* logfile){
+void write_to_logfile(int send, int send_bytes, int logfile){
+  flock(logfile,LOCK_EX);
+  char tmp[50];
+  if(send==1)
+    sprintf(tmp, "send %d\n",send_bytes);
+  else if(send==0)
+    sprintf(tmp, "rcv %d\n",send_bytes);
+  else if(send==2)
+    sprintf(tmp, "rcved file\n");
+  else if(send==3)
+    sprintf(tmp, "send file\n");
+
+  write(logfile, tmp, strlen(tmp));
+  fdatasync(logfile);
+  flock(logfile,LOCK_UN);
+}
+
+int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, int logfile){
   struct stat tmp_stat;
   //---------------------------------------rcv child process
   char pipe_name[50];
@@ -391,14 +414,6 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, ch
     return 1;
   }
 
-  //opening logfile
-  FILE *log_file_file=NULL;
-  log_file_file=fopen(logfile, "a");
-  if(log_file_file==NULL){
-    cerr <<"!send can not open logfile file \n";
-    return 1;
-  }
-
   cout<<"reading\n";
 
   char buffer[999];
@@ -406,7 +421,7 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, ch
     cerr<< "read rcv failed: "<< strerror(errno)<<endl;
     return 1;
   }
-  fprintf(log_file_file, "rcv %d\n", 2);
+  write_to_logfile(0, 2, logfile);
   buffer[2]='\0';
   int sz=stol(buffer, NULL, 10);
   while(sz!=0){
@@ -415,7 +430,7 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, ch
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
     }
-    fprintf(log_file_file, "rcv %d\n", sz);
+    write_to_logfile(0, sz, logfile);
     buffer[sz]='\0';
     cout<<"\t"<<buffer<<endl;
 
@@ -447,15 +462,17 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, ch
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
     }
-    fprintf(log_file_file, "rcv %d\n", 4);
+    write_to_logfile(0, 4, logfile);
     buffer[4]='\0';
     sz=stol(buffer, NULL, 10);
     if(read(pipe_rcv, buffer, sz)<0){
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
     }
-    fprintf(log_file_file, "rcv %d\n", sz);
+    write_to_logfile(0, sz, logfile);
     buffer[sz]='\0';
+
+    write_to_logfile(2, 0, logfile);
 
     //write to file
     fprintf(new_file, "%s", buffer);
@@ -466,7 +483,7 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, ch
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
     }
-    fprintf(log_file_file, "rcv %d\n", 2);
+    write_to_logfile(0, 2, logfile);
     buffer[2]='\0';
     sz=stol(buffer, NULL, 10);
   }
@@ -474,12 +491,11 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, ch
   cout<<"TELIOSA\n";
 
   close(pipe_rcv);
-  fclose(log_file_file);
 
   return 0;
 }
 
-int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir, char* logfile){
+int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir, int logfile){
   struct stat tmp_stat;
   //FIXME an enas fakelos ine kenos
   //---------------------------------------send child process
@@ -503,14 +519,6 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
   int pipe_send=-1;
   if((pipe_send=open(pipe_name,O_WRONLY))<0){
     cerr<< "open send failed: "<< strerror(errno)<<endl;
-    return 1;
-  }
-
-  //opening logfile
-  FILE *log_file_file=NULL;
-  log_file_file=fopen(logfile, "a");
-  if(log_file_file==NULL){
-    cerr <<"!send can not open logfile file \n";
     return 1;
   }
 
@@ -541,12 +549,13 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
           cerr<< "write send faileda: "<< strerror(errno)<<endl;
           return 1;
         }
-        fprintf(log_file_file, "send %d\n", 2);
+        write_to_logfile(1, 2, logfile);
+
         if(write(pipe_send, tmp, sz)<0){
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
-        fprintf(log_file_file, "send %d\n", sz);
+        write_to_logfile(1, sz, logfile);;
 
         //write file
         sprintf(tmp, "%s%s%s",input_dir,sub_dir,dir->d_name);
@@ -556,13 +565,15 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
-        fprintf(log_file_file, "send %d\n", 4);
+        write_to_logfile(1, 4, logfile);
         char* tmpp= read_hole_file(tmp);
         if(write(pipe_send, tmpp, sz)<0){
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
-        fprintf(log_file_file, "send %d\n", sz);
+        write_to_logfile(1, sz, logfile);
+
+        write_to_logfile(3, 0, logfile);
       }
       else{// if directory
         sprintf(tmp, "%s%s/",sub_dir,dir->d_name);
@@ -578,11 +589,10 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
     }
     cout<<"TELIOSA kiego\n";
   }
-  fprintf(log_file_file, "send %d\n", 2);
+  write_to_logfile(1, 2, logfile);
 
   closedir(d);
   close(pipe_send);
-  fclose(log_file_file);
 
   return 0;
 }
@@ -620,6 +630,8 @@ void usr1_signal_handler(int sig){
 void kill_signal_handler(int sig){
   struct stat tmp_stat;
   char command[50];
+
+  write(handler_logfile_fd, "exiting\n", 8);
 
   //deleting mirror
   sprintf(command,"rm -r %s",handler_mirror_dir);
