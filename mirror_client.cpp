@@ -18,20 +18,21 @@ using namespace std;
 //FIXME otan lambano sima apo ta pedia kapies fores emfanizi mono ena apo ta 2
 //TODO 30 sec
 //TODO check if lockfile is ok
-//TODO close logfile
 //TODO handler globals na ginoun pointers
-//TODO diagrafi ta .fifo
-bool endsWith(char* mainStr, char* toMatch);
-int is_file(const char *path);
-char* read_hole_file(char* file_name);
-int file_sz(char* file_name);
-void write_to_logfile(int send, int send_bytes, int logfile);
-int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, int logfile);
-int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir, int logfile);
-int delete_process(char* mirror_dir, char* dot_id_file);
-void usr1_signal_handler(int sig);
-void kill_signal_handler(int sig);
+//TODO send with buffer sz
 
+bool endsWith(char* mainStr, char* toMatch);//returns true id mainStr ends with toMatch
+int is_file(const char *path);//returns true if path is a file
+char* read_hole_file(char* file_name);// returns pointer to the contents of the file
+int file_sz(char* file_name);// returns the number of characters in the file
+void write_to_logfile(int send, int send_bytes, int logfile);//writes to logfile and handles flock
+int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile);//handles all the rcv part
+int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile);//handles all the send part
+int delete_process( char* mirror_dir, char* dot_id_file);//handles all the delete part
+void usr1_signal_handler(int sig);//signal handler for SIGUSR1
+void kill_signal_handler(int sig);//signal handler for SIGKILL and SIGINT
+
+//globals for signal handlers
 char handler_common_dir[50], handler_mirror_dir[50];
 int handler_id, handler_logfile_fd;
 
@@ -132,9 +133,8 @@ int main(int argc, char * argv[]){
 
   //make log_file
   logfile_fd=-1;
-  logfile_fd=open(log_file,O_CREAT | O_WRONLY, 0766);
-  if(logfile_fd<=0){
-    cerr <<"!Can not create logfile file "<<id<<"\n";
+  if((logfile_fd=open(log_file,O_TRUNC | O_CREAT | O_WRONLY, 0766))<=0){
+    cerr <<"!Can not create logfile file "<<log_file<<"\n";
     return 1;
   }
   char write_tmp[50];
@@ -175,10 +175,28 @@ int main(int argc, char * argv[]){
       //create send child
       pid_t pid_send = fork();
       if (pid_send == 0){//---------------------------------------send child process
-        if(send_process(common_dir, dir->d_name, id, "", input_dir,logfile_fd)!=0){
+        char pipe_name[50], new_dot_id[50];
+        cout<<"send child\n";
+        //make pipe send
+        strcpy(new_dot_id,dir->d_name);
+        new_dot_id[strlen(new_dot_id)-3]='\0';
+        sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
+        if(stat(pipe_name, &tmp_stat) != 0){
+          if(mkfifo(pipe_name, 0666) !=0){
+            if(errno!=EEXIST){
+              cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
+              return 1;
+            }
+          }
+        }
+        else
+          cout<<"file send exists\n";
+        //call send function
+        if(send_process(pipe_name, id, "", input_dir,logfile_fd)!=0){
           cerr<< "send_proces0 failed \n";
           return 1;
         }
+        unlink(pipe_name);
         return 0;
       }
       else if (pid_send > 0){
@@ -192,10 +210,37 @@ int main(int argc, char * argv[]){
       //create rcv child
       pid_t pid_rcv = fork();
       if (pid_rcv == 0){//---------------------------------------rcv child process
-        if(rvc_process(common_dir, dir->d_name, id, mirror_dir,logfile_fd)!=0){
+        char pipe_name[50], new_dot_id[50];
+        cout<<"rcv child\n";
+        //make and open pipe rcv
+        strcpy(new_dot_id,dir->d_name);
+        new_dot_id[strlen(new_dot_id)-3]='\0';
+        sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
+        if(stat(pipe_name, &tmp_stat) != 0){
+          if(mkfifo(pipe_name, 0666) !=0){
+            if(errno!=EEXIST){
+              cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
+              return 1;
+            }
+          }
+        }
+        else
+          cout<<"file rcv exists\n";
+
+        char tmp[50];
+        //create mirror/id directory
+        sprintf(tmp, "%s/%s",mirror_dir,new_dot_id);
+        if(stat(tmp, &tmp_stat) != 0)
+          if(mkdir(tmp, 0777)){
+            cerr <<"!rcv acn not create "<<tmp<<"\n";
+            return 1;
+          }
+        //call send function
+        if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd)!=0){
           cerr<< "rvc_proces0 failed \n";
           return 1;
         }
+        unlink(pipe_name);
         return 0;
       }
       else if (pid_rcv > 0){
@@ -207,7 +252,6 @@ int main(int argc, char * argv[]){
         return 1;
       }
 
-      //TODO ektiposi minimatos epitixias gia ka8e xristi
       wait(NULL);
       wait(NULL);
       cout<<"Done for client "<<dir->d_name<<endl;
@@ -238,10 +282,28 @@ int main(int argc, char * argv[]){
         //create send child
         pid_t pid_send = fork();
         if (pid_send == 0){//---------------------------------------send child process
-          if(send_process(common_dir, event->name, id, "", input_dir,logfile_fd)!=0){
-            cerr<< "send_process failed \n";
+          char pipe_name[50], new_dot_id[50];
+          cout<<"send child\n";
+          //make pipe send
+          strcpy(new_dot_id,event->name);
+          new_dot_id[strlen(new_dot_id)-3]='\0';
+          sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
+          if(stat(pipe_name, &tmp_stat) != 0){
+            if(mkfifo(pipe_name, 0666) !=0){
+              if(errno!=EEXIST){
+                cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
+                return 1;
+              }
+            }
+          }
+          else
+            cout<<"file send exists\n";
+          //call send function
+          if(send_process(pipe_name, id, "", input_dir,logfile_fd)!=0){
+            cerr<< "send_proces0 failed \n";
             return 1;
           }
+          unlink(pipe_name);
           return 0;
         }
         else if (pid_send > 0){
@@ -255,10 +317,37 @@ int main(int argc, char * argv[]){
         //create rcv child
         pid_t pid_rcv = fork();
         if (pid_rcv == 0){//---------------------------------------rcv child process
-          if(rvc_process(common_dir, event->name, id, mirror_dir,logfile_fd)!=0){
-            cerr<< "rvc_proces failed \n";
+          char pipe_name[50], new_dot_id[50];
+          cout<<"rcv child\n";
+          //make and open pipe rcv
+          strcpy(new_dot_id,event->name);
+          new_dot_id[strlen(new_dot_id)-3]='\0';
+          sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
+          if(stat(pipe_name, &tmp_stat) != 0){
+            if(mkfifo(pipe_name, 0666) !=0){
+              if(errno!=EEXIST){
+                cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
+                return 1;
+              }
+            }
+          }
+          else
+            cout<<"file rcv exists\n";
+
+          char tmp[50];
+          //create mirror/id directory
+          sprintf(tmp, "%s/%s",mirror_dir,new_dot_id);
+          if(stat(tmp, &tmp_stat) != 0)
+            if(mkdir(tmp, 0777)){
+              cerr <<"!rcv acn not create "<<tmp<<"\n";
+              return 1;
+            }
+          //call send function
+          if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd)!=0){
+            cerr<< "rvc_proces0 failed \n";
             return 1;
           }
+          unlink(pipe_name);
           return 0;
         }
         else if (pid_rcv > 0){
@@ -316,6 +405,7 @@ int main(int argc, char * argv[]){
   return 0;
 }
 
+//returns true id mainStr ends with toMatch
 bool endsWith(char* mainStr, char* toMatch){
 	if(strlen(mainStr) >= strlen(toMatch) &&
 			strcmp(mainStr + strlen(mainStr) - strlen(toMatch), toMatch) == 0)
@@ -324,6 +414,7 @@ bool endsWith(char* mainStr, char* toMatch){
 			return false;
 }
 
+//returns true if path is a file
 int is_file(const char *path){
     struct stat path_stat;
     if(stat(path, &path_stat)!=0){
@@ -334,6 +425,7 @@ int is_file(const char *path){
     return S_ISREG(path_stat.st_mode);
 }
 
+// returns pointer to the contents of the file
 char* read_hole_file(char* file_name){// TODO if return NULL
   FILE *f = fopen(file_name, "rb");
   fseek(f, 0, SEEK_END);
@@ -349,6 +441,7 @@ char* read_hole_file(char* file_name){// TODO if return NULL
   return string;
 }
 
+// returns the number of characters in the file
 int file_sz(char* file_name){
   int fd =-1;
   if((fd=open(file_name, O_RDONLY))<0){
@@ -363,6 +456,7 @@ int file_sz(char* file_name){
   return sz;
 }
 
+//writes to logfile and handles flock
 void write_to_logfile(int send, int send_bytes, int logfile){
   flock(logfile,LOCK_EX);
   char tmp[50];
@@ -380,34 +474,11 @@ void write_to_logfile(int send, int send_bytes, int logfile){
   flock(logfile,LOCK_UN);
 }
 
-int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, int logfile){
-  struct stat tmp_stat;
+//handles all the rcv part
+int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile){
   //---------------------------------------rcv child process
-  char pipe_name[50];
-  cout<<"rcv child\n";
-  //make and open pipe rcv
-  new_dot_id[strlen(new_dot_id)-3]='\0';
-  sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
-  if(stat(pipe_name, &tmp_stat) != 0){
-    if(mkfifo(pipe_name, 0666) !=0){
-      if(errno!=EEXIST){
-        cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
-        return 1;
-      }
-    }
-  }
-  else
-    cout<<"file rcv exists\n";
-
-  char tmp[300];
-  //create mirror/id directory
-  sprintf(tmp, "%s/%s",mirror_dir,new_dot_id);
-  if(stat(tmp, &tmp_stat) != 0)
-    if(mkdir(tmp, 0777)){
-      cerr <<"!rcv acn not create "<<tmp<<"\n";
-      return 1;
-    }
-
+  char tmp[50];
+  struct stat tmp_stat;
   //open pipe
   int pipe_rcv=-1;
   if((pipe_rcv=open(pipe_name,O_RDWR))<0){
@@ -496,25 +567,11 @@ int rvc_process(char* common_dir, char* new_dot_id, int id, char* mirror_dir, in
   return 0;
 }
 
-int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char* input_dir, int logfile){
+//handles all the send part
+int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile){
   struct stat tmp_stat;
   //FIXME an enas fakelos ine kenos
   //---------------------------------------send child process
-  char pipe_name[50];
-  cout<<"send child\n";
-  //make and open pipe send
-  new_dot_id[strlen(new_dot_id)-3]='\0';// FIXME sto recursion to new_dot_id ine mpourda
-  sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
-  if(stat(pipe_name, &tmp_stat) != 0){
-    if(mkfifo(pipe_name, 0666) !=0){
-      if(errno!=EEXIST){
-        cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
-        return 1;
-      }
-    }
-  }
-  else
-    cout<<"file send exists\n";
 
   //opening send pipe
   int pipe_send=-1;
@@ -579,7 +636,7 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
       else{// if directory
         sprintf(tmp, "%s%s/",sub_dir,dir->d_name);
         cout<<"recursive "<<tmp<<endl;
-        send_process(common_dir, new_dot_id, id, tmp, input_dir,logfile);
+        send_process(pipe_name, id, tmp, input_dir,logfile);
       }
     }
   }
@@ -598,6 +655,7 @@ int send_process(char* common_dir, char* new_dot_id, int id, char* sub_dir, char
   return 0;
 }
 
+//handles all the delete part
 int delete_process(char* mirror_dir, char* dot_id_file){
   char ttt[100];
   struct stat tmp_stat;
@@ -623,16 +681,21 @@ int delete_process(char* mirror_dir, char* dot_id_file){
   return 0;
 }
 
+//signal handler for SIGUSR1
 void usr1_signal_handler(int sig){
   cout<<"child failed\n";
   fflush(stdout);
 }
 
+//signal handler for SIGKILL and SIGINT
 void kill_signal_handler(int sig){
   struct stat tmp_stat;
   char command[50];
 
+  //TODO kill children
+
   write(handler_logfile_fd, "exiting\n", 8);
+  close(handler_logfile_fd);
 
   //deleting mirror
   sprintf(command,"rm -r %s",handler_mirror_dir);
