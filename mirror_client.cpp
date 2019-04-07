@@ -19,14 +19,13 @@ using namespace std;
 //TODO 30 sec
 //TODO check if lockfile is ok
 //TODO handler globals na ginoun pointers
-//TODO send with buffer sz
 
 bool endsWith(char* mainStr, char* toMatch);//returns true id mainStr ends with toMatch
 int is_file(const char *path);//returns true if path is a file
 char* read_hole_file(char* file_name);// returns pointer to the contents of the file
 int file_sz(char* file_name);// returns the number of characters in the file
 void write_to_logfile(int send, int send_bytes, int logfile);//writes to logfile and handles flock
-int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile);//handles all the rcv part
+int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len);//handles all the rcv part
 int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile);//handles all the send part
 int delete_process( char* mirror_dir, char* dot_id_file);//handles all the delete part
 void usr1_signal_handler(int sig);//signal handler for SIGUSR1
@@ -236,7 +235,7 @@ int main(int argc, char * argv[]){
             return 1;
           }
         //call send function
-        if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd)!=0){
+        if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
           cerr<< "rvc_proces0 failed \n";
           return 1;
         }
@@ -343,7 +342,7 @@ int main(int argc, char * argv[]){
               return 1;
             }
           //call send function
-          if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd)!=0){
+          if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
             cerr<< "rvc_proces0 failed \n";
             return 1;
           }
@@ -468,14 +467,18 @@ void write_to_logfile(int send, int send_bytes, int logfile){
     sprintf(tmp, "rcved file\n");
   else if(send==3)
     sprintf(tmp, "sended file\n");
+  else if(send==4)
+    sprintf(tmp, "sended dir\n");
+  else if(send==5)
+    sprintf(tmp, "rcved dir\n");
 
-  write(logfile, tmp, strlen(tmp));
+  write(logfile, tmp, strlen(tmp));//check for error
   fdatasync(logfile);
   flock(logfile,LOCK_UN);
 }
 
 //handles all the rcv part
-int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile){
+int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len){
   //---------------------------------------rcv child process
   char tmp[50];
   struct stat tmp_stat;
@@ -488,7 +491,8 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
 
   cout<<"reading\n";
 
-  char buffer[999];
+  char buffer[9999], tmp_buff[buff_len+1],tmp_file_name[9999];
+  //read name len
   if(read(pipe_rcv, buffer, 2)<0){
     cerr<< "read rcv failed: "<< strerror(errno)<<endl;
     return 1;
@@ -496,40 +500,43 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
   write_to_logfile(0, 2, logfile);
   buffer[2]='\0';
   int sz=stol(buffer, NULL, 10);
+  int left_to_read, bytes_to_read;
   while(sz!=0){
     //read name
-    if(read(pipe_rcv, buffer, sz)<0){
-      cerr<< "read rcv failed: "<< strerror(errno)<<endl;
-      return 1;
+    buffer[0]='\0';
+    left_to_read=sz;
+    while(left_to_read>0){
+      if(left_to_read-buff_len<0)
+        bytes_to_read=left_to_read;
+      else
+        bytes_to_read=buff_len;
+      if(read(pipe_rcv, tmp_buff, bytes_to_read)<0){
+        cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+        return 1;
+      }
+      write_to_logfile(0, bytes_to_read, logfile);
+      tmp_buff[bytes_to_read]='\0';
+      cout<<"\t"<<tmp_buff<<endl;
+      strcat(buffer,tmp_buff);
+      left_to_read-=bytes_to_read;
     }
-    write_to_logfile(0, sz, logfile);
-    buffer[sz]='\0';
-    cout<<"\t"<<buffer<<endl;
+    strcpy(tmp_file_name,buffer);//coppy name for later
 
     //make dir
-    sprintf(tmp, "%s",buffer);
+    sprintf(tmp, "%s",tmp_file_name);
     char *tmpp=strrchr(tmp,'/');
-    if(tmpp!=NULL){// if not in the starting directory
+    if(tmpp!=NULL){// if not in the starting directory 1_mirror
       *tmpp='\0';
       char tmp2[100];
       sprintf(tmp2, "%s/%s/%s",mirror_dir,new_dot_id,tmp);
       if(stat(tmp2, &tmp_stat) != 0)
         if(mkdir(tmp2, 0766)){
-          cerr <<"!rcv can not create directory "<<tmp2<<"\n";
+          cerr <<"!!rcv can not create directory "<<tmp2;perror("\n");
           return 1;
         }
     }
 
-    //make file
-    FILE *new_file=NULL;
-    sprintf(tmp, "%s/%s/%s",mirror_dir,new_dot_id,buffer);
-    new_file=fopen(tmp, "w");
-    if(new_file==NULL){
-      cerr <<"!rcv can not create "<<tmp<<" file "<<strerror(errno)<<"\n";
-      return 1;
-    }
-
-    //read file
+    //read file len
     if(read(pipe_rcv, buffer, 4)<0){
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
@@ -537,18 +544,54 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
     write_to_logfile(0, 4, logfile);
     buffer[4]='\0';
     sz=stol(buffer, NULL, 10);
-    if(read(pipe_rcv, buffer, sz)<0){
-      cerr<< "read rcv failed: "<< strerror(errno)<<endl;
-      return 1;
+    fflush(stdout);
+
+    if(sz!=-1){//if it is a file
+      //make file
+      FILE *new_file=NULL;
+      sprintf(tmp, "%s/%s/%s",mirror_dir,new_dot_id,tmp_file_name);
+      new_file=fopen(tmp, "w");
+      if(new_file==NULL){
+        cerr <<"!rcv can not create "<<tmp<<" file "<<strerror(errno)<<"\n";
+        return 1;
+      }
+
+      //read file
+      buffer[0]='\0';
+      left_to_read=sz;
+      while(left_to_read>0){
+        if(left_to_read-buff_len<0)
+          bytes_to_read=left_to_read;
+        else
+          bytes_to_read=buff_len;
+        if(read(pipe_rcv, tmp_buff, bytes_to_read)<0){
+          cerr<< "read rcv failed: "<< strerror(errno)<<endl;
+          return 1;
+        }
+        write_to_logfile(0, bytes_to_read, logfile);
+        tmp_buff[bytes_to_read]='\0';
+        cout<<"\t"<<tmp_buff<<endl;
+        strcat(buffer,tmp_buff);
+        left_to_read-=bytes_to_read;
+      }
+
+      //write to file
+      fprintf(new_file, "%s", buffer);
+      fclose(new_file);
+      write_to_logfile(2, 0, logfile);
     }
-    write_to_logfile(0, sz, logfile);
-    buffer[sz]='\0';
-
-    write_to_logfile(2, 0, logfile);
-
-    //write to file
-    fprintf(new_file, "%s", buffer);
-    fclose(new_file);
+    else{
+      write_to_logfile(5, 0, logfile);
+    }
+    // else{//if it is a directory with no files in it
+    //   sprintf(tmp, "%s/%s/%s",mirror_dir,new_dot_id,buffer);
+    //   cout<<"ine sketo "<<tmp<<endl;
+    //   if(stat(tmp, &tmp_stat) != 0)
+    //     if(mkdir(tmp, 0766)){
+    //       cerr <<"!rcv can not create lone directory "<<tmp<<"\n";
+    //       return 1;
+    //     }
+    // }
 
     //read next name or 00
     if(read(pipe_rcv, buffer, 2)<0){
@@ -569,8 +612,6 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
 
 //handles all the send part
 int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile){
-  struct stat tmp_stat;
-  //FIXME an enas fakelos ine kenos
   //---------------------------------------send child process
 
   //opening send pipe
@@ -583,7 +624,8 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
   cout<<"writing\n";
 
   DIR *d=NULL;
-  char tmp[100];
+  char tmp[300];
+  bool empty_dir=true;
   struct dirent *dir;
   sprintf(tmp,"%s%s",input_dir,sub_dir);
   if((d= opendir(tmp))==NULL){
@@ -596,7 +638,8 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
     if(strcmp(dir->d_name,".")!=0 && strcmp(dir->d_name,"..")!=0){
       sprintf(tmp, "%s%s%s",input_dir,sub_dir,dir->d_name);
       if(is_file(tmp)){// if file
-        char buffer[9999];// TODO check size
+        empty_dir=false;
+        char buffer[9999];
         cout<<"for "<<tmp << '\n';
 
         //write name
@@ -613,7 +656,7 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
-        write_to_logfile(1, sz, logfile);;
+        write_to_logfile(1, sz, logfile);
 
         //write file
         sprintf(tmp, "%s%s%s",input_dir,sub_dir,dir->d_name);
@@ -629,6 +672,7 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
+        free(tmpp);
         write_to_logfile(1, sz, logfile);
 
         write_to_logfile(3, 0, logfile);
@@ -640,6 +684,38 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
       }
     }
   }
+
+  if(empty_dir){//if the directory is empty
+    char buffer[9999];
+    //write name
+    sprintf(tmp,"%s",sub_dir);
+    cout<<"\n\nempty dir"<<tmp<<"\n";
+    int sz=strlen(tmp);
+    sprintf(buffer, "%d",sz);
+    if(write(pipe_send, buffer, 2)<0){
+      cerr<< "write send faileda: "<< strerror(errno)<<endl;
+      return 1;
+    }
+    write_to_logfile(1, 2, logfile);
+
+    if(write(pipe_send, tmp, sz)<0){
+      cerr<< "write send failed: "<< strerror(errno)<<endl;
+      return 1;
+    }
+    write_to_logfile(1, sz, logfile);
+
+    //write file
+    sprintf(buffer, "%d",-1);
+    if(write(pipe_send, buffer, 4)<0){
+      cerr<< "write send failed: "<< strerror(errno)<<endl;
+      return 1;
+    }
+    write_to_logfile(1, 4, logfile);
+
+    write_to_logfile(4, 0, logfile);
+  }
+
+  //write 00 at the end
   if(strcmp(sub_dir,"")==0){
     if(write(pipe_send, "00", 2)<0){
       cerr<< "write send failed: "<< strerror(errno)<<endl;
