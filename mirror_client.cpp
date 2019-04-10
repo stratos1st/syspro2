@@ -16,9 +16,9 @@
 #include <sys/prctl.h>
 
 using namespace std;
-//FIXME otan lambano sima apo ta pedia kapies fores emfanizi mono ena apo ta 2
-//TODO 30 sec
-//TODO handler globals na ginoun pointers
+
+//caled each time a usr enters. spawns children etc
+void usr_entered(char *file_name, char* common_dir, int id, char* input_dir, char* mirror_dir, int logfile_fd, int buffer_size);
 
 bool endsWith(char* mainStr, char* toMatch);//returns true id mainStr ends with toMatch
 int is_file(const char *path);//returns true if path is a file
@@ -26,17 +26,20 @@ char* read_hole_file(char* file_name);// returns pointer to the contents of the 
 int file_sz(char* file_name);// returns the number of characters in the file
 void write_to_logfile(int send, int send_bytes, int logfile);//writes to logfile and handles flock
 
-int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len);//handles all the rcv part
-int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile);//handles all the send part
+int rvc_process(char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len);//handles all the rcv part
+int send_process(int id, char* sub_dir, char* input_dir, int logfile);//handles all the send part
 int delete_process( char* mirror_dir, char* dot_id_file);//handles all the delete part
 
 void usr1_signal_handler(int sig, siginfo_t * sigonfo, void *a);//main signal handler for SIGUSR1
-void kill_signal_handler(int sig);//main signal handler for SIGKILL and SIGINT
+void kill_signal_handler(int sig);//main signal handler for SIGQUIT and SIGINT
 void alarm_signal_handler(int sig);//child signal handler for alarm
 
 //globals for signal handlers
 char handler_common_dir[50], handler_mirror_dir[50];
 int handler_id, handler_logfile_fd;
+
+//global bariable for forked processes
+char pipe_name[50];
 
 int main(int argc, char * argv[]){
   int id, buffer_size, logfile_fd;
@@ -54,7 +57,7 @@ int main(int argc, char * argv[]){
   static struct sigaction act2;
   act2.sa_handler = kill_signal_handler;
   sigfillset (&(act2.sa_mask ));
-  sigaction (SIGKILL, &act2, NULL);
+  sigaction (SIGQUIT, &act2, NULL);
   sigaction (SIGINT, &act2, NULL);
 
 //---------------------------------------------parsing command line argumets------------------------------------------
@@ -175,96 +178,7 @@ int main(int argc, char * argv[]){
     sprintf(any_path, "%d.id", id);
     //if it is a .id file and not mine
     if(endsWith(dir->d_name, ".id") && strcmp(dir->d_name,any_path)!=0){
-      //create send child
-      pid_t pid_send = fork();
-      if (pid_send == 0){//---------------------------------------send child process
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
-        char pipe_name[50], new_dot_id[50];
-        cout<<"send child\n";
-        //make pipe send
-        strcpy(new_dot_id,dir->d_name);
-        new_dot_id[strlen(new_dot_id)-3]='\0';
-        sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
-        if(stat(pipe_name, &tmp_stat) != 0){
-          if(mkfifo(pipe_name, 0666) !=0){
-            if(errno!=EEXIST){
-              cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
-              kill(getppid(),SIGUSR1);
-              return 1;
-            }
-          }
-        }
-        else
-          cout<<"file send exists\n";
-        //call send function
-        if(send_process(pipe_name, id, "", input_dir,logfile_fd)!=0){
-          cerr<< "send_proces0 failed \n";
-          kill(getppid(),SIGUSR1);
-          return 1;
-        }
-        unlink(pipe_name);
-        return 0;
-      }
-      else if (pid_send > 0){
-          // parent process
-      }
-      else{
-        cerr<< "fork send0 failed: "<< strerror(errno)<<endl;
-        return 1;
-      }
-
-      //create rcv child
-      pid_t pid_rcv = fork();
-      if (pid_rcv == 0){//---------------------------------------rcv child process
-        prctl(PR_SET_PDEATHSIG, SIGKILL);
-        char pipe_name[50], new_dot_id[50];
-        cout<<"rcv child\n";
-        //make and open pipe rcv
-        strcpy(new_dot_id,dir->d_name);
-        new_dot_id[strlen(new_dot_id)-3]='\0';
-        sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
-        if(stat(pipe_name, &tmp_stat) != 0){
-          if(mkfifo(pipe_name, 0666) !=0){
-            if(errno!=EEXIST){
-              cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
-              return 1;
-            }
-          }
-        }
-        else
-          cout<<"file rcv exists\n";
-
-        char tmp[50];
-        //create mirror/id directory
-        sprintf(tmp, "%s/%s",mirror_dir,new_dot_id);
-        if(stat(tmp, &tmp_stat) != 0)
-          if(mkdir(tmp, 0777)){
-            cerr <<"!rcv acn not create "<<tmp<<"\n";
-            kill(getppid(),SIGUSR1);
-            return 1;
-          }
-        //call send function
-        if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
-          cerr<< "rvc_proces0 failed \n";
-          kill(getppid(),SIGUSR1);
-          return 1;
-        }
-        unlink(pipe_name);
-        return 0;
-      }
-      else if (pid_rcv > 0){
-          // parent process
-
-      }
-      else{
-        cerr<< "fork send0 failed: "<< strerror(errno)<<endl;
-        return 1;
-      }
-
-      wait(NULL);
-      wait(NULL);
-      cout<<"Done for client "<<dir->d_name<<endl;
-
+      usr_entered(dir->d_name, common_dir, id, input_dir, mirror_dir, logfile_fd, buffer_size);
     }
   }
   closedir(d);
@@ -286,99 +200,7 @@ int main(int argc, char * argv[]){
     while(event != NULL) {
       //---------------file .id created
       if ((event->mask & IN_CREATE) && endsWith(event->name, ".id")){
-        printf("File created: %s\n", event->name);
-
-        //create send child
-        pid_t pid_send = fork();
-        if (pid_send == 0){//---------------------------------------send child process
-          prctl(PR_SET_PDEATHSIG, SIGKILL);
-          char pipe_name[50], new_dot_id[50];
-          cout<<"send child\n";
-          //make pipe send
-          strcpy(new_dot_id,event->name);
-          new_dot_id[strlen(new_dot_id)-3]='\0';
-          sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
-          if(stat(pipe_name, &tmp_stat) != 0){
-            if(mkfifo(pipe_name, 0666) !=0){
-              if(errno!=EEXIST){
-                cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
-                kill(getppid(),SIGUSR1);
-                return 1;
-              }
-            }
-          }
-          else
-            cout<<"file send exists\n";
-          //call send function
-          if(send_process(pipe_name, id, "", input_dir,logfile_fd)!=0){
-            cerr<< "send_proces0 failed \n";
-            kill(getppid(),SIGUSR1);
-            return 1;
-          }
-          unlink(pipe_name);
-          return 0;
-        }
-        else if (pid_send > 0){
-            // parent process
-        }
-        else{
-          cerr<< "fork send failed: "<< strerror(errno)<<endl;
-          return 1;
-        }
-
-        //create rcv child
-        pid_t pid_rcv = fork();
-        if (pid_rcv == 0){//---------------------------------------rcv child process
-          prctl(PR_SET_PDEATHSIG, SIGKILL);
-          char pipe_name[50], new_dot_id[50];
-          cout<<"rcv child\n";
-          //make and open pipe rcv
-          strcpy(new_dot_id,event->name);
-          new_dot_id[strlen(new_dot_id)-3]='\0';
-          sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
-          if(stat(pipe_name, &tmp_stat) != 0){
-            if(mkfifo(pipe_name, 0666) !=0){
-              if(errno!=EEXIST){
-                cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
-                kill(getppid(),SIGUSR1);
-                return 1;
-              }
-            }
-          }
-          else
-            cout<<"file rcv exists\n";
-
-          char tmp[50];
-          //create mirror/id directory
-          sprintf(tmp, "%s/%s",mirror_dir,new_dot_id);
-          if(stat(tmp, &tmp_stat) != 0)
-            if(mkdir(tmp, 0777)){
-              cerr <<"!rcv acn not create "<<tmp<<"\n";
-              kill(getppid(),SIGUSR1);
-              return 1;
-            }
-          //call send function
-          if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
-            cerr<< "rvc_proces0 failed \n";
-            kill(getppid(),SIGUSR1);
-            return 1;
-          }
-          unlink(pipe_name);
-          return 0;
-        }
-        else if (pid_rcv > 0){
-            // parent process
-
-        }
-        else{
-          cerr<< "fork send failed: "<< strerror(errno)<<endl;
-          return 1;
-        }
-
-        wait(NULL);
-        wait(NULL);
-        cout<<"Done for client "<<event->name<<endl;
-
+        usr_entered(event->name, common_dir, id, input_dir, mirror_dir, logfile_fd, buffer_size);
       }
       //---------------file .id deleted
       else if ((event->mask & IN_DELETE) && endsWith(event->name, ".id")){
@@ -401,12 +223,12 @@ int main(int argc, char * argv[]){
           return 1;
         }
       }
-      else {
-        printf("Unknown Mask 0x%.8x %s\n", event->mask,event->name);
-        // printf("Mask 0x%.8x\n", IN_IGNORED);
-        // printf("Mask 0x%.8x\n", IN_CREATE);
-        // printf("Mask 0x%.8x\n", IN_DELETE);
-      }
+      // else {
+      //   printf("Unknown Mask 0x%.8x %s\n", event->mask,event->name);
+      //   // printf("Mask 0x%.8x\n", IN_IGNORED);
+      //   // printf("Mask 0x%.8x\n", IN_CREATE);
+      //   // printf("Mask 0x%.8x\n", IN_DELETE);
+      // }
 
       // Move to next struct
       len -= sizeof(struct inotify_event) + event->len;
@@ -419,6 +241,136 @@ int main(int argc, char * argv[]){
   }
 
   return 0;
+}
+
+//caled each time a usr enters. spawns children etc
+void usr_entered(char *file_name, char* common_dir, int id, char* input_dir, char* mirror_dir, int logfile_fd , int buffer_size){
+  int times_child_failed=0;
+  bool ok=true;
+
+  struct stat tmp_stat;
+  printf("File created: %s\n", file_name);
+
+  do{
+    //create send child
+    pid_t pid_send = fork();
+    if (pid_send == 0){//---------------------------------------send child process
+      prctl(PR_SET_PDEATHSIG, SIGINT);
+      char new_dot_id[50];
+      cout<<"entering send child\n";
+      //make pipe send
+      strcpy(new_dot_id,file_name);
+      new_dot_id[strlen(new_dot_id)-3]='\0';
+      sprintf(pipe_name, "./%s/id%d_to_id%s.fifo",common_dir,id,new_dot_id);
+      if(stat(pipe_name, &tmp_stat) != 0){
+        if(mkfifo(pipe_name, 0666) !=0){
+          if(errno!=EEXIST){
+            cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
+            //unlink(pipe_name);
+            kill(getppid(),SIGUSR1);
+            //return 1;
+          }
+        }
+      }
+      // else
+      //   cout<<"file send exists\n";
+
+      //call send function
+      if(send_process(id, "", input_dir,logfile_fd)!=0){
+        cerr<< "send_proces0 failed \n";
+        kill(getppid(),SIGUSR1);
+        exit(1);
+      }
+      unlink(pipe_name);
+      exit(0);
+    }
+    else if (pid_send > 0){
+        // parent process
+    }
+    else{
+      cerr<< "fork send failed: "<< strerror(errno)<<endl;
+      exit(1);;
+    }
+
+    //create rcv child
+    pid_t pid_rcv = fork();
+    if (pid_rcv == 0){//---------------------------------------rcv child process
+      prctl(PR_SET_PDEATHSIG, SIGINT);
+      char new_dot_id[50];
+      cout<<"entering rcv child\n";
+      //make and open pipe rcv
+      strcpy(new_dot_id,file_name);
+      new_dot_id[strlen(new_dot_id)-3]='\0';
+      sprintf(pipe_name, "./%s/id%s_to_id%d.fifo",common_dir,new_dot_id,id);
+      if(stat(pipe_name, &tmp_stat) != 0){
+        if(mkfifo(pipe_name, 0666) !=0){
+          if(errno!=EEXIST){
+            cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
+            kill(getppid(),SIGUSR1);
+            exit(1);
+          }
+        }
+      }
+      // else
+      //   cout<<"file rcv exists\n";
+
+      char tmp[50];
+      //create mirror/id directory
+      sprintf(tmp, "%s/%s",mirror_dir,new_dot_id);
+      if(stat(tmp, &tmp_stat) != 0)
+        if(mkdir(tmp, 0777)){
+          cerr <<"!rcv acn not create "<<tmp<<"\n";
+          kill(getppid(),SIGUSR1);
+          exit(1);
+        }
+      //call send function
+      if(rvc_process(new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
+        cerr<< "rvc_proces0 failed \n";
+        //unlink(pipe_name);
+        kill(getppid(),SIGUSR1);
+        //return 1;
+      }
+      unlink(pipe_name);
+      exit(0);
+    }
+    else if (pid_rcv > 0){
+        // parent process
+
+    }
+    else{
+      cerr<< "fork send failed: "<< strerror(errno)<<endl;
+      exit(1);
+    }
+
+    int status=-1;
+    ok=true;
+
+    wait(&status);
+    if(WIFEXITED(status)){
+      int es = WEXITSTATUS(status);
+      if(es!=0){//if child failed
+        ok=false;
+      }
+      //printf("Exit status was %d\n", es);
+    }
+    wait(&status);
+    if(WIFEXITED(status)){
+      int es = WEXITSTATUS(status);
+      if(es!=0){//if child failed
+        ok=false;
+      }
+      //printf("Exit status was %d\n", es);
+    }
+
+    if(ok==false)
+      times_child_failed++;
+
+  }while(ok!=true && times_child_failed<3);
+
+  if(ok==true)
+    cout<<"Done for client "<<file_name<<endl;
+  else
+    cout<<"FAILED for client "<<file_name<<endl;
 }
 
 //returns true id mainStr ends with toMatch
@@ -495,15 +447,17 @@ void write_to_logfile(int send, int send_bytes, int logfile){
 }
 
 //handles all the rcv part
-int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len){
+int rvc_process(char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len){
   //---------------------------------------rcv child process
   //asign alarm handler
   static struct sigaction act;
   act.sa_handler = alarm_signal_handler;
   sigfillset (&(act.sa_mask ));
   sigaction (SIGALRM, &act, NULL);
+  sigaction (SIGINT, &act, NULL);
+  sigaction (SIGQUIT, &act, NULL);
   //alarm
-  alarm(2);
+  alarm(30);
 
   char tmp[50];
   struct stat tmp_stat;
@@ -514,11 +468,9 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
     return 1;
   }
 
-  cout<<"reading\n";
-
   char buffer[9999], tmp_buff[buff_len+1],tmp_file_name[9999];
   //read name len
-  if(read(pipe_rcv, buffer, 2)<0){
+  if(read(pipe_rcv, buffer, 2)<0 && errno!=EINTR){
     cerr<< "read rcv failed: "<< strerror(errno)<<endl;
     return 1;
   }
@@ -535,7 +487,7 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
         bytes_to_read=left_to_read;
       else
         bytes_to_read=buff_len;
-      if(read(pipe_rcv, tmp_buff, bytes_to_read)<0){
+      if(read(pipe_rcv, tmp_buff, bytes_to_read)<0 && errno!=EINTR){
         cerr<< "read rcv failed: "<< strerror(errno)<<endl;
         return 1;
       }
@@ -562,7 +514,7 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
     }
 
     //read file len
-    if(read(pipe_rcv, buffer, 4)<0){
+    if(read(pipe_rcv, buffer, 4)<0 && errno!=EINTR){
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
     }
@@ -589,7 +541,7 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
           bytes_to_read=left_to_read;
         else
           bytes_to_read=buff_len;
-        if(read(pipe_rcv, tmp_buff, bytes_to_read)<0){
+        if(read(pipe_rcv, tmp_buff, bytes_to_read)<0 && errno!=EINTR){
           cerr<< "read rcv failed: "<< strerror(errno)<<endl;
           return 1;
         }
@@ -619,7 +571,7 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
     // }
 
     //read next name or 00
-    if(read(pipe_rcv, buffer, 2)<0){
+    if(read(pipe_rcv, buffer, 2)<0 && errno!=EINTR){
       cerr<< "read rcv failed: "<< strerror(errno)<<endl;
       return 1;
     }
@@ -636,17 +588,19 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
 }
 
 //handles all the send part
-int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile){
+int send_process(int id, char* sub_dir, char* input_dir, int logfile){
   //---------------------------------------send child process
   //asign alarm handler
   static struct sigaction act;
   act.sa_handler = alarm_signal_handler;
   sigfillset (&(act.sa_mask ));
   sigaction (SIGALRM, &act, NULL);
+  sigaction (SIGINT, &act, NULL);
+  sigaction (SIGQUIT, &act, NULL);
   //alarm
-  alarm(3);
+  alarm(30);
 
-  sleep(5);
+  //sleep(5);
 
   //opening send pipe
   int pipe_send=-1;
@@ -654,8 +608,6 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
     cerr<< "open send failed: "<< strerror(errno)<<endl;
     return 1;
   }
-
-  cout<<"writing\n";
 
   DIR *d=NULL;
   char tmp[300];
@@ -680,13 +632,13 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
         sprintf(tmp, "%s%s",sub_dir,dir->d_name);
         int sz=strlen(tmp);
         sprintf(buffer, "%d",sz);
-        if(write(pipe_send, buffer, 2)<0){
+        if(write(pipe_send, buffer, 2)<0 && errno!=EINTR){
           cerr<< "write send faileda: "<< strerror(errno)<<endl;
           return 1;
         }
         write_to_logfile(1, 2, logfile);
 
-        if(write(pipe_send, tmp, sz)<0){
+        if(write(pipe_send, tmp, sz)<0 && errno!=EINTR){
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
@@ -696,13 +648,13 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
         sprintf(tmp, "%s%s%s",input_dir,sub_dir,dir->d_name);
         sz=file_sz(tmp);
         sprintf(buffer, "%d",sz);
-        if(write(pipe_send, buffer, 4)<0){
+        if(write(pipe_send, buffer, 4)<0 && errno!=EINTR){
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
         write_to_logfile(1, 4, logfile);
         char* tmpp= read_hole_file(tmp);
-        if(write(pipe_send, tmpp, sz)<0){
+        if(write(pipe_send, tmpp, sz)<0 && errno!=EINTR){
           cerr<< "write send failed: "<< strerror(errno)<<endl;
           return 1;
         }
@@ -714,7 +666,7 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
       else{// if directory
         sprintf(tmp, "%s%s/",sub_dir,dir->d_name);
         cout<<"recursive "<<tmp<<endl;
-        send_process(pipe_name, id, tmp, input_dir,logfile);
+        send_process(id, tmp, input_dir,logfile);
       }
     }
   }
@@ -726,13 +678,13 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
     cout<<"\n\nempty dir"<<tmp<<"\n";
     int sz=strlen(tmp);
     sprintf(buffer, "%d",sz);
-    if(write(pipe_send, buffer, 2)<0){
+    if(write(pipe_send, buffer, 2)<0 && errno!=EINTR){
       cerr<< "write send faileda: "<< strerror(errno)<<endl;
       return 1;
     }
     write_to_logfile(1, 2, logfile);
 
-    if(write(pipe_send, tmp, sz)<0){
+    if(write(pipe_send, tmp, sz)<0 && errno!=EINTR){
       cerr<< "write send failed: "<< strerror(errno)<<endl;
       return 1;
     }
@@ -740,7 +692,7 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
 
     //write file
     sprintf(buffer, "%d",-1);
-    if(write(pipe_send, buffer, 4)<0){
+    if(write(pipe_send, buffer, 4)<0 && errno!=EINTR){
       cerr<< "write send failed: "<< strerror(errno)<<endl;
       return 1;
     }
@@ -751,7 +703,7 @@ int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int lo
 
   //write 00 at the end
   if(strcmp(sub_dir,"")==0){
-    if(write(pipe_send, "00", 2)<0){
+    if(write(pipe_send, "00", 2)<0 && errno!=EINTR){
       cerr<< "write send failed: "<< strerror(errno)<<endl;
       return 1;
     }
@@ -795,15 +747,17 @@ int delete_process(char* mirror_dir, char* dot_id_file){
 void usr1_signal_handler(int sig, siginfo_t * siginfo, void *a){
   cout<<"child failed\n";
   fflush(stdout);
-  kill(siginfo->si_pid,SIGKILL);//kill sender
+  kill(siginfo->si_pid,SIGINT);//kill sender
 }
 
-//main signal handler for SIGKILL and SIGINT
+//main signal handler for SIGQUIT and SIGINT
 void kill_signal_handler(int sig){
+  cout<<"\tkill_signal_handler\n";
+  fflush(stdout);
   struct stat tmp_stat;
   char command[50];
 
-  //children are killed automaticly by prctl(PR_SET_PDEATHSIG, SIGKILL);
+  //children are killed automaticly by prctl(PR_SET_PDEATHSIG, SIGQUIT);
 
   write(handler_logfile_fd, "exiting\n", 8);
   close(handler_logfile_fd);
@@ -827,11 +781,21 @@ void kill_signal_handler(int sig){
   cout<<"exiting\n";
   fflush(stdout);
 
-  exit(1);
+  exit(0);
 }
 
 //child signal handler for alarm
 void alarm_signal_handler(int sig){
-  kill(getppid(), SIGUSR1);
-  //exit(1);
+  if(sig==SIGALRM){
+    cout<<"\t ALARM alarm_signal_handler\n";
+    fflush(stdout);
+    kill(getppid(), SIGUSR1);
+    //exit(1);
+  }
+  else if(sig==SIGQUIT || sig==SIGINT){
+    cout<<"\t KILL alarm_signal_handler\n";
+    fflush(stdout);
+    unlink(pipe_name);
+    exit(1);
+  }
 }
