@@ -13,11 +13,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <sys/prctl.h>
 
 using namespace std;
 //FIXME otan lambano sima apo ta pedia kapies fores emfanizi mono ena apo ta 2
 //TODO 30 sec
-//TODO check if lockfile is ok
 //TODO handler globals na ginoun pointers
 
 bool endsWith(char* mainStr, char* toMatch);//returns true id mainStr ends with toMatch
@@ -25,11 +25,14 @@ int is_file(const char *path);//returns true if path is a file
 char* read_hole_file(char* file_name);// returns pointer to the contents of the file
 int file_sz(char* file_name);// returns the number of characters in the file
 void write_to_logfile(int send, int send_bytes, int logfile);//writes to logfile and handles flock
+
 int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len);//handles all the rcv part
 int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile);//handles all the send part
 int delete_process( char* mirror_dir, char* dot_id_file);//handles all the delete part
-void usr1_signal_handler(int sig);//signal handler for SIGUSR1
-void kill_signal_handler(int sig);//signal handler for SIGKILL and SIGINT
+
+void usr1_signal_handler(int sig, siginfo_t * sigonfo, void *a);//main signal handler for SIGUSR1
+void kill_signal_handler(int sig);//main signal handler for SIGKILL and SIGINT
+void alarm_signal_handler(int sig);//child signal handler for alarm
 
 //globals for signal handlers
 char handler_common_dir[50], handler_mirror_dir[50];
@@ -43,8 +46,9 @@ int main(int argc, char * argv[]){
   //asigning signal handlers
   //FIXEME kamia fora stin 2h fora pou to trexo bgazi mono ena "child failed"
   static struct sigaction act;
-  act.sa_handler = usr1_signal_handler;
+  act.sa_sigaction = usr1_signal_handler;
   sigfillset (&(act.sa_mask ));
+  act.sa_flags= SA_SIGINFO;
   sigaction (SIGUSR1, &act, NULL);
 
   static struct sigaction act2;
@@ -174,6 +178,7 @@ int main(int argc, char * argv[]){
       //create send child
       pid_t pid_send = fork();
       if (pid_send == 0){//---------------------------------------send child process
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
         char pipe_name[50], new_dot_id[50];
         cout<<"send child\n";
         //make pipe send
@@ -184,6 +189,7 @@ int main(int argc, char * argv[]){
           if(mkfifo(pipe_name, 0666) !=0){
             if(errno!=EEXIST){
               cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
+              kill(getppid(),SIGUSR1);
               return 1;
             }
           }
@@ -193,6 +199,7 @@ int main(int argc, char * argv[]){
         //call send function
         if(send_process(pipe_name, id, "", input_dir,logfile_fd)!=0){
           cerr<< "send_proces0 failed \n";
+          kill(getppid(),SIGUSR1);
           return 1;
         }
         unlink(pipe_name);
@@ -209,6 +216,7 @@ int main(int argc, char * argv[]){
       //create rcv child
       pid_t pid_rcv = fork();
       if (pid_rcv == 0){//---------------------------------------rcv child process
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
         char pipe_name[50], new_dot_id[50];
         cout<<"rcv child\n";
         //make and open pipe rcv
@@ -232,11 +240,13 @@ int main(int argc, char * argv[]){
         if(stat(tmp, &tmp_stat) != 0)
           if(mkdir(tmp, 0777)){
             cerr <<"!rcv acn not create "<<tmp<<"\n";
+            kill(getppid(),SIGUSR1);
             return 1;
           }
         //call send function
         if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
           cerr<< "rvc_proces0 failed \n";
+          kill(getppid(),SIGUSR1);
           return 1;
         }
         unlink(pipe_name);
@@ -267,7 +277,7 @@ int main(int argc, char * argv[]){
     struct inotify_event *event = NULL;
 
     int len = read(fdnotify, monitor_buffer, sizeof(monitor_buffer));
-    if (len < 0) {
+    if (len < 0 && errno!=EINTR) {
       cerr<<"!read: "<<strerror(errno)<<endl;
       return 1;
     }
@@ -281,6 +291,7 @@ int main(int argc, char * argv[]){
         //create send child
         pid_t pid_send = fork();
         if (pid_send == 0){//---------------------------------------send child process
+          prctl(PR_SET_PDEATHSIG, SIGKILL);
           char pipe_name[50], new_dot_id[50];
           cout<<"send child\n";
           //make pipe send
@@ -291,6 +302,7 @@ int main(int argc, char * argv[]){
             if(mkfifo(pipe_name, 0666) !=0){
               if(errno!=EEXIST){
                 cerr<< "mkfifo send failed: "<< strerror(errno)<<endl;
+                kill(getppid(),SIGUSR1);
                 return 1;
               }
             }
@@ -300,6 +312,7 @@ int main(int argc, char * argv[]){
           //call send function
           if(send_process(pipe_name, id, "", input_dir,logfile_fd)!=0){
             cerr<< "send_proces0 failed \n";
+            kill(getppid(),SIGUSR1);
             return 1;
           }
           unlink(pipe_name);
@@ -316,6 +329,7 @@ int main(int argc, char * argv[]){
         //create rcv child
         pid_t pid_rcv = fork();
         if (pid_rcv == 0){//---------------------------------------rcv child process
+          prctl(PR_SET_PDEATHSIG, SIGKILL);
           char pipe_name[50], new_dot_id[50];
           cout<<"rcv child\n";
           //make and open pipe rcv
@@ -326,6 +340,7 @@ int main(int argc, char * argv[]){
             if(mkfifo(pipe_name, 0666) !=0){
               if(errno!=EEXIST){
                 cerr<< "mkfifo rcv failed: "<< strerror(errno)<<endl;
+                kill(getppid(),SIGUSR1);
                 return 1;
               }
             }
@@ -339,11 +354,13 @@ int main(int argc, char * argv[]){
           if(stat(tmp, &tmp_stat) != 0)
             if(mkdir(tmp, 0777)){
               cerr <<"!rcv acn not create "<<tmp<<"\n";
+              kill(getppid(),SIGUSR1);
               return 1;
             }
           //call send function
           if(rvc_process(pipe_name, new_dot_id, id, mirror_dir,logfile_fd,buffer_size)!=0){
             cerr<< "rvc_proces0 failed \n";
+            kill(getppid(),SIGUSR1);
             return 1;
           }
           unlink(pipe_name);
@@ -480,6 +497,14 @@ void write_to_logfile(int send, int send_bytes, int logfile){
 //handles all the rcv part
 int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int logfile, int buff_len){
   //---------------------------------------rcv child process
+  //asign alarm handler
+  static struct sigaction act;
+  act.sa_handler = alarm_signal_handler;
+  sigfillset (&(act.sa_mask ));
+  sigaction (SIGALRM, &act, NULL);
+  //alarm
+  alarm(2);
+
   char tmp[50];
   struct stat tmp_stat;
   //open pipe
@@ -613,6 +638,15 @@ int rvc_process(char* pipe_name, char* new_dot_id, int id, char* mirror_dir, int
 //handles all the send part
 int send_process(char* pipe_name, int id, char* sub_dir, char* input_dir, int logfile){
   //---------------------------------------send child process
+  //asign alarm handler
+  static struct sigaction act;
+  act.sa_handler = alarm_signal_handler;
+  sigfillset (&(act.sa_mask ));
+  sigaction (SIGALRM, &act, NULL);
+  //alarm
+  alarm(3);
+
+  sleep(5);
 
   //opening send pipe
   int pipe_send=-1;
@@ -757,18 +791,19 @@ int delete_process(char* mirror_dir, char* dot_id_file){
   return 0;
 }
 
-//signal handler for SIGUSR1
-void usr1_signal_handler(int sig){
+//main signal handler for SIGUSR1
+void usr1_signal_handler(int sig, siginfo_t * siginfo, void *a){
   cout<<"child failed\n";
   fflush(stdout);
+  kill(siginfo->si_pid,SIGKILL);//kill sender
 }
 
-//signal handler for SIGKILL and SIGINT
+//main signal handler for SIGKILL and SIGINT
 void kill_signal_handler(int sig){
   struct stat tmp_stat;
   char command[50];
 
-  //TODO kill children
+  //children are killed automaticly by prctl(PR_SET_PDEATHSIG, SIGKILL);
 
   write(handler_logfile_fd, "exiting\n", 8);
   close(handler_logfile_fd);
@@ -790,4 +825,13 @@ void kill_signal_handler(int sig){
     }
 
   cout<<"exiting\n";
+  fflush(stdout);
+
+  exit(1);
+}
+
+//child signal handler for alarm
+void alarm_signal_handler(int sig){
+  kill(getppid(), SIGUSR1);
+  //exit(1);
 }
