@@ -14,7 +14,7 @@ num_of_dirs=$3
 levels=$4
 
 #check if params are intiger
-intiger='^[1-9]+$'
+intiger='^[1-9]+'
 if ! [[ ( $num_of_files =~ $intiger ) && ( $num_of_dirs =~ $intiger ) && ( $levels =~ $intiger ) ]] ; then
    echo "error: parameter not a number"
    exit 1
@@ -48,8 +48,8 @@ for j in $(seq 1 $how_many_files) ; do
   #random length and string
   # 128 kb is 128000 chars
   # 1 kb is 1000 chars
-  len128=$(( $RANDOM % (128000-1000) ))
-  len128=$(( $len128 + 1000 ))
+  len128=$(( $RANDOM % (128-100) ))
+  len128=$(( $len128 + 100 ))
   random_string=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w $len128 | head -n 1)
 
   #make random file
@@ -85,8 +85,8 @@ for i in $(seq 1 $num_of_dirs) ; do
     #random length and string
     # 128 kb is 128000 chars
     # 1 kb is 1000 chars
-    len128=$(( $RANDOM % (128000-1000) ))
-    len128=$(( $len128 + 1000 ))
+    len128=$(( $RANDOM % (128-100) ))
+    len128=$(( $len128 + 100 ))
     random_string=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w $len128 | head -n 1)
 
     #make random file
